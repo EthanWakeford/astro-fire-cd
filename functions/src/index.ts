@@ -18,8 +18,8 @@ initializeApp();
 // perhaps think about storing installation IDs and workflowIDs
 
 export const queueBuild = onRequest(async (req, res) => {
-  info(req.params);
-  const { owner, repo } = req.params;
+  info(req.body);
+  const { owner, repo } = req.body;
 
   const jwtToken = generateJwt();
 
@@ -38,7 +38,7 @@ export const queueBuild = onRequest(async (req, res) => {
   // run in 5 minutes
   const toRunTimestamp = thisTimestamp + 5 * 60;
 
-  info('about build task', { workflowID }, { appToken });
+  info('about build request', { workflowID, appToken });
 
   await createBuildTask(toRunTimestamp, appToken, workflowID, owner, repo)
     .then(() => {
@@ -64,8 +64,6 @@ async function createBuildTask(
     location,
     QUEUE_NAME.value()
   );
-
-  info(appToken);
 
   const [tasklist] = await tasksClient.listTasks({ parent });
 
@@ -172,7 +170,7 @@ async function getWorkflowID(owner: string, repo: string, appToken: string) {
   );
 
   // should only ever be one????
-  return dispatchWorkflow[0];
+  return dispatchWorkflow[0].id;
 }
 
 function generateJwt() {
