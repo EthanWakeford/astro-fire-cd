@@ -4,10 +4,11 @@ import { info } from 'firebase-functions/logger';
 import { defineString } from 'firebase-functions/params';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from 'octokit';
+import * as jwt from 'jsonwebtoken';
 
 const PROJECT_ID = defineString('PROJECT_ID');
 const QUEUE_NAME = defineString('QUEUE_NAME');
-const JWT = defineString('JWT');
+// const JWT = defineString('JWT');
 const APP_ID = defineString('APP_ID');
 const PRIVATE_KEY = defineString('PRIVATE_KEY');
 const location = 'us-central1';
@@ -20,8 +21,10 @@ export const queueBuild = onRequest(async (req, res) => {
   info(req.params);
   const { owner, repo } = req.params;
 
+  const jwtToken = generateJwt();
+
   // get installationID
-  const installationId = await getInstallationId(owner, repo, JWT.value());
+  const installationId = await getInstallationId(owner, repo, jwtToken);
 
   // create install access token
   const appToken = await createAppInstallationToken(installationId);
@@ -170,4 +173,18 @@ async function getWorkflowID(owner: string, repo: string, appToken: string) {
 
   // should only ever be one????
   return dispatchWorkflow[0];
+}
+
+function generateJwt() {
+  // Generate JWT
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
+    iat: now, // Issued at time
+    exp: now + 60, // JWT expiration time (1 minute from issued time)
+    iss: '885771', // GitHub App's ID
+  };
+
+  const token = jwt.sign(payload, PRIVATE_KEY.value(), { algorithm: 'RS256' });
+
+  return token;
 }
