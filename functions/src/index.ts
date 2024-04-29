@@ -4,33 +4,39 @@ import { info } from 'firebase-functions/logger';
 import { defineString } from 'firebase-functions/params';
 import { createAppAuth } from '@octokit/auth-app';
 import { Octokit } from 'octokit';
+import { v2beta3 } from '@google-cloud/tasks';
 import * as jwt from 'jsonwebtoken';
+
+type Project = {
+  projectName: string;
+  workflowID: string;
+  installationID: string;
+};
 
 const PROJECT_ID = defineString('PROJECT_ID');
 const QUEUE_NAME = defineString('QUEUE_NAME');
-// const JWT = defineString('JWT');
 const APP_ID = defineString('APP_ID');
 const PRIVATE_KEY = defineString('PRIVATE_KEY');
+const API_KEY = defineString('API_KEY');
 const location = 'us-central1';
 
 initializeApp();
+import * as admin from 'firebase-admin';
 
-// perhaps think about storing installation IDs and workflowIDs
+const db = admin.firestore();
 
 export const queueBuild = onRequest(async (req, res) => {
+  // Validate the API key
+  const apiKey = req.headers['x-api-key'];
+  if (apiKey !== API_KEY.value()) {
+    res.status(403).send('Invalid API key');
+    return;
+  }
+
   info(req.body);
   const { owner, repo } = req.body;
 
-  const jwtToken = generateJwt();
-
-  // get installationID
-  const installationId = await getInstallationId(owner, repo, jwtToken);
-
-  // create install access token
-  const appToken = await createAppInstallationToken(installationId);
-
-  // get workflowID
-  const workflowID = await getWorkflowID(owner, repo, appToken);
+  const { workflowID, appToken } = await getIDs(owner, repo);
 
   const currentDate = new Date();
   const thisTimestamp = Math.floor(currentDate.getTime() / 1000);
@@ -56,8 +62,6 @@ async function createBuildTask(
   owner: string,
   repo: string
 ) {
-  // have to import here because it breaks cloud functions otherwise
-  const { v2beta3 } = await import('@google-cloud/tasks');
   const tasksClient = new v2beta3.CloudTasksClient();
   const parent = tasksClient.queuePath(
     PROJECT_ID.value(),
@@ -165,12 +169,11 @@ async function getWorkflowID(owner: string, repo: string, appToken: string) {
   );
 
   const workflows = response.data.workflows;
-  const dispatchWorkflow = workflows.filter((workflow: any) =>
+  const dispatchWorkflow = workflows.find((workflow: any) =>
     workflow.name.includes('dispatch')
   );
 
-  // should only ever be one????
-  return dispatchWorkflow[0].id;
+  return dispatchWorkflow.id;
 }
 
 function generateJwt() {
@@ -185,4 +188,71 @@ function generateJwt() {
   const token = jwt.sign(payload, PRIVATE_KEY.value(), { algorithm: 'RS256' });
 
   return token;
+}
+
+async function getCachedIDs(
+  owner: string,
+  repo: string
+): Promise<Project | undefined> {
+  const snapshot = await db.collection('ids').get();
+  const data = snapshot.docs.map((doc) => {
+    return { ...doc.data() };
+  });
+
+  const projectName = `${owner}/${repo}`;
+  const project = data.find((doc) => doc.projectName === projectName) as
+    | Project
+    | undefined;
+
+  return project;
+}
+
+async function cacheIDs(
+  owner: string,
+  repo: string,
+  workflowID: string,
+  installationID: string
+) {
+  const collection = db.collection('ids');
+  const projectName = `${owner}/${repo}`;
+
+  const docRef = await collection.add({
+    projectName,
+    workflowID,
+    installationID,
+  });
+
+  info('added to cache: ', docRef);
+}
+
+async function getIDs(
+  owner: string,
+  repo: string
+): Promise<{ workflowID: string; appToken: string }> {
+  const projectInfo = await getCachedIDs(owner, repo);
+  if (projectInfo !== undefined) {
+    // load from cached data on Firestore
+    const { workflowID, installationID } = projectInfo;
+
+    // create install access token
+    const appToken = await createAppInstallationToken(installationID);
+
+    return { workflowID, appToken };
+  }
+  // get data from Github
+
+  const jwtToken = generateJwt();
+
+  // get installationID
+  const installationID = await getInstallationId(owner, repo, jwtToken);
+
+  // create install access token
+  const appToken = await createAppInstallationToken(installationID);
+
+  // get workflowID
+  const workflowID = await getWorkflowID(owner, repo, appToken);
+
+  // cache data to firestore
+  await cacheIDs(owner, repo, workflowID, installationID);
+  return { workflowID, appToken };
 }
